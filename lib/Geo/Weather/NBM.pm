@@ -1,18 +1,19 @@
 use v5.40;
-package Geo::Weather::NBM;
 use experimental 'class';
 
 class Geo::Weather::NBM {
   use builtin ':5.40';
   use constant DEBUG => 1;
 
-  #field $date :param :reader;
-  #field $hour :param :reader;
   field $text :param :reader;
-  #field $datetime_class :param = 'DateTime';
   field $station :param :reader;
   field $is_parsed = false;
   field $data = {};
+
+  ADJUST {
+    die 'Station is not valid' unless length $station == 4 and $station =~ m/^\w\w\w\w$/;
+    $station = uc $station;
+  }
 
   method is_parsed () {
     $is_parsed;
@@ -28,32 +29,31 @@ class Geo::Weather::NBM {
 
     my @lines = split /\n/, $text;
     shift @lines while (!length $lines[0] or $lines[0] !~ m/$station/);
+    die "Could not find report for $station in text" unless @lines;
 
-    parse_head(data => $data, lines => \@lines);
-    parse_body(data => $data, lines => \@lines);
-    parse_days(data => $data, lines => \@lines);
-    massage(data => $data);
+    parse_head(\@lines, $data);
+    parse_body(\@lines, $data);
+    parse_days(\@lines, $data);
+    massage($data);
 
     $is_parsed = true;
   }
 
-  sub parse_head (%params) {
-    my $data  = $params{'data'};
-    my $lines = $params{'lines'};
-
+  sub parse_head ($lines, $data) {
     # Parse main header
-    DEBUG && warn "Parsing header...\n";
     my $header = $lines->[0];
     my ($sta, $label, $month, $day, $year, $hour, $minute) = $header =~ m#(\w\w\w\w)\s+(NBM V4.2 NBS GUIDANCE)\s+(\d{1,2})/(\d{1,2})/(\d\d\d\d)\s+(\d\d)(\d\d) UTC#;
+
     unless ($sta and $label and $month and $day and $year) {
       die "Invalid header:\n\t[$header]\n";
     }
+
     $data->{station}       = $sta;
     $data->{forecast_type} = $label;
     $data->{generated_at}  = DateTimeX::Inflatable->new(
       year => $year, month => $month, day => $day, hour => $hour, minute => $minute, second => 0, time_zone => 'UTC'
     );
-    DEBUG && warn "finished.\n\n";
+
     return;
   }
 
@@ -61,10 +61,7 @@ class Geo::Weather::NBM {
     JAN => 1, FEB => 2, MAR => 3, APR => 4, MAY => 5, JUN => 6,
     JUL => 7, AUG => 8, SEP => 9, OCT => 10, NOV => 11, DEC => 12
   );
-  sub parse_days (%params) {
-    my $data  = $params{'data'};
-    my $lines = $params{'lines'};
-
+  sub parse_days ($lines, $data) {
     # Extract a list of dates separated by a /
     # e.g. '/AUG 30 /SEPT 1 /SEPT2'
     my @dates = ();
@@ -88,6 +85,8 @@ class Geo::Weather::NBM {
       my $m;
       my $columns = $data->{'columns'};
       foreach my $i (0 .. $#$columns) {
+        my $col = $columns->[$i];
+
         # If the column UTC hour is less than the previous, it's a new day
         if (!defined $h or !defined $d or $columns->[$i]{'UTC'} < $h) {
           my $stored_date = shift @dates;
@@ -106,16 +105,21 @@ class Geo::Weather::NBM {
           $span_hours += 24 if $span_hours < 0;
           $columns->[$i - 1]->{'hour_span'} = $span_hours;
         }
+
+        # Compute date/time of each column
+        my $prev_dt = $i == 0 ? $data->{generated_at} : $columns->[$i - 1]->{UTC_dt};
+        my $new_dt  = $prev_dt->clone;
+        $new_dt->{'hour'}  = $col->{'UTC'};
+        $new_dt->{'day'}   = $col->{'UTC_day'};
+        $new_dt->{'month'} = $col->{'UTC_mon'};
+        $new_dt->{'year'}++ if $col->{'UTC_mon'} < $prev_dt->{'month'};
+        $col->{'UTC_dt'} = $new_dt;
       }
     }
     return;
   }
 
-  sub parse_body (%params) {
-    my $data  = $params{'data'};
-    my $lines = $params{'lines'};
-
-    DEBUG && warn "Parsing body...\n";
+  sub parse_body ($lines, $data) {
     my @columns = ();
     for my $line (@$lines) {
       next unless $line =~ m#^\s\w\w\w\s#;
@@ -126,7 +130,6 @@ class Geo::Weather::NBM {
         my $i = 0;
         while ($rest and length $rest >= 3) {
           my $cell_value = substr($rest, 0, 3);
-          #DEBUG && warn " - cell: [$cell_value]\n";
           $rest = substr($rest, 3);
           $columns[$i] //= {};
           $columns[$i]->{$label} = trim($cell_value);
@@ -134,15 +137,12 @@ class Geo::Weather::NBM {
         } #while
       } #scope
     } #for
-    DEBUG && warn "finished.\n\n";
 
     $data->{'columns'} = \@columns;
     return;
   } #sub
 
-  sub massage (%params) {
-    my $data = $params{'data'};
-
+  sub massage ($data) {
     # The preciptation are keyed for the ending hour. Move them to starting hour
     my $columns = $data->{'columns'};
     foreach my $i (0 .. $#$columns) {
@@ -160,11 +160,12 @@ class Geo::Weather::NBM {
         }
       }
 
-      # Precip type
+      # Relative Humidity, Precip Types, Clouds, English Wind Direction
+      $col->{'rel_hum'}      = relative_humidity($col->{'TMP'}, $col->{'DPT'});
       $col->{'precip_types'} = precip_types($col->{'PRA'}, $col->{'PRZ'}, $col->{'PPL'}, $col->{'PSN'});
-
-      # Calculate clouds
-      $col->{'SKY_cld'} = sky_cover_to_abbr($col->{'SKY'} / 100);
+      $col->{'SKY_cld'}      = sky_cover_to_abbr($col->{'SKY'} / 100);
+      $col->{'WDR_abbr'}     = wind_direction_abbr($col->{WDR} * 10);
+      $col->{'prob_ifr'}     = ($col->{IFV} > $col->{IFC}) ? $col->{IFV} : $col->{IFC};
 
       # Calculate flight conditions
       my $fr = 'VFR';
@@ -179,14 +180,14 @@ class Geo::Weather::NBM {
       $col->{CIG_fr} = 'MVFR'  if 10 <= $col->{CIG} < 30;
       $col->{CIG_fr} = 'IFR'   if  5 <= $col->{CIG} < 10;
       $col->{CIG_fr} = 'LIFR'  if  0 <= $col->{CIG} < 5;
-
-      # Probability of IFR ceiling OR visibility
-      my ($prob_lo, $prob_hi) = sort {$a <=> $b} ($col->{IFV}, $col->{IFC});
-      $col->{prob_ifr} = $prob_hi;
-
-      # English wind direction
-      $col->{WDR_abbr} = wind_direction_abbr($col->{WDR} * 10);
     }
+    return;
+  }
+
+  sub relative_humidity ($temp, $dewp) {
+    $temp = ($temp - 32) / 1.8;
+    $dewp = ($dewp - 32) / 1.8;
+    return int(100*(exp((17.625*$dewp)/(243.04+$dewp))/exp((17.625*$temp)/(243.04+$temp))));
   }
 
   sub precip_types ($ra //= 0, $fr //= 0, $pl //= 0, $sn //= 0) {
@@ -222,26 +223,21 @@ class Geo::Weather::NBM {
 
   sub sky_cover_to_abbr ($pct) {
     my $word;
-    $word = 'OVC';                      # Officially 8/8
-    $word = 'BKN' if $pct <= 7 / 8; # Officially 6/8 to 7/8
-    $word = 'SCT' if $pct <  6 / 8; # Officially 3/8 to 5/8
-    $word = 'FEW' if $pct <= 2 / 8; # Officially 1/8 to 2/8
-    $word = 'CLR' if $pct <= 1 /32;
+    $word = 'OVC';                  # Officially 8/8
+    $word = 'BKN' if $pct <  7.5/8; # Officially 5/8 to 7/8
+    $word = 'SCT' if $pct <  4.5/8; # Officially 3/8 to 4/8, using midpoint of 4/8 and 5/8
+    $word = 'FEW' if $pct <= 2  /8; # Officially 1/8 to 2/8
+    $word = 'CLR' if $pct <= 1/32;
     return $word;
   }
 
 } #clsas
 
 package DateTimeX::Inflatable {
-  sub new ($class, @args) {
-    return bless \@args, $class;
-  }
-  sub inflate ($self) {
-    return DateTime->new(@$self);
-  }
-  sub to ($self, $class) {
-    return $class->new(@$self);
-  }
+  sub new ($class, %args) { bless \%args, $class;}
+  sub inflate ($self) { DateTime->new(%$self); }
+  sub to ($self, $class) { $class->new(%$self); }
+  sub clone ($self) { return __PACKAGE__->new(%$self); }
 }
 
 =pod
