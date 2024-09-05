@@ -64,18 +64,18 @@ class Geo::Weather::NBM {
   sub parse_days ($lines, $data) {
     # Extract a list of dates separated by a /
     # e.g. '/AUG 30 /SEPT 1 /SEPT2'
-    my @dates = ();
-    for my $line (@$lines) {
-      next unless $line =~ m`^\sDT`;
-      my ($dt, @tmp_dates) = split m`/`, $line;
-      foreach my $tmp_date (@tmp_dates) {
-        my ($month, $day) = split m`\s+`, $tmp_date;
-        $month = substr($month, 0, 3);
-        die 'Could not identify month' unless $months{$month};
-        push @dates, [$months{$month}, $day];
-      }
-      last;
-    }
+    #my @dates = ();
+    #for my $line (@$lines) {
+    #  next unless $line =~ m`^\sDT`;
+    #  my ($dt, @tmp_dates) = split m`/`, $line;
+    #  foreach my $tmp_date (@tmp_dates) {
+    #    my ($month, $day) = split m`\s+`, $tmp_date;
+    #    $month = substr($month, 0, 3);
+    #    die 'Could not identify month' unless $months{$month};
+    #    push @dates, [$months{$month}, $day];
+    #  }
+    #  last;
+    #}
 
     # Add UTC_mon and UTC_day and hour_span to each column value
     # This is more difficult than it should be due to the odd formatting
@@ -84,19 +84,25 @@ class Geo::Weather::NBM {
       my $d;
       my $m;
       my $columns = $data->{'columns'};
+      my $gen_dt  = $data->{'generated_at'}->inflate;
       foreach my $i (0 .. $#$columns) {
         my $col = $columns->[$i];
 
+        # Get the date
+        my $for_dt = $gen_dt->clone->add(hours => $col->{FHR});
+
         # If the column UTC hour is less than the previous, it's a new day
-        if (!defined $h or !defined $d or $columns->[$i]{'UTC'} < $h) {
-          my $stored_date = shift @dates;
-          $columns->[$i]{'UTC_mon'} = $m = $stored_date->[0];
-          $columns->[$i]{'UTC_day'} = $d = $stored_date->[1];
-        } else {
-          $columns->[$i]{'UTC_mon'} = $m;
-          $columns->[$i]{'UTC_day'} = $d;
-        }
-        $h = $columns->[$i]{'UTC'};
+        #if (!defined $h or !defined $d or $columns->[$i]{'UTC'} < $h) {
+        #  my $stored_date = shift @dates;
+        #  $columns->[$i]{'UTC_mon'} = $m = $stored_date->[0];
+        #  $columns->[$i]{'UTC_day'} = $d = $stored_date->[1];
+        #} else {
+        #  $columns->[$i]{'UTC_mon'} = $m;
+        #  $columns->[$i]{'UTC_day'} = $d;
+        #}
+        $m = $col->{'UTC_mon'} = $for_dt->strftime('%m');
+        $d = $col->{'UTC_day'} = $for_dt->strftime('%d');
+        $h = $col->{'UTC'};
         # Save to table for conversion from date to array index
         $data->{mdh_to_index}{sprintf('%02d-%02dT%02d', $m, $d, $h)} = $i;
         # Update previous column with its length
@@ -245,9 +251,9 @@ package DateTimeX::Inflatable {
 Synopsis
 
     my $wx = Geo::Weather::NBM->new(text => $text);
+    my $data = $wx->data;
 
-__END__
-
+Sample report
 
  KFYJ    NBM V4.2 NBS GUIDANCE    8/29/2024  1200 UTC
  DT /AUG  29/AUG  30                /AUG  31                /SEPT  1
