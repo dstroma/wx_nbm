@@ -158,11 +158,18 @@ class Geo::Weather::NBM {
       for my $k (qw(P06 Q06 T06 S06 I06 P12 Q12 T12)) {
         my ($hour_span, $column_span) = (substr($k,1,2) eq '06' ? (6,2) : (12,4));
         if (exists $col->{$k} and length $col->{$k}) {
-          $columns->[$i - $column_span]{$k . '_start'} = {
+          my $start_index = $i - $column_span + 1;
+          while ($start_index < 0) {
+            $start_index++;
+            $column_span--;
+            $hour_span = $hour_span - 3;
+          }
+          $columns->[$start_index]{$k . '_start'} = {
             hour_span   => $hour_span,
             column_span => $column_span,
             value       => int($col->{$k} || 0)
           };
+          $columns->[$_]{lc($k . 'x')} = int($col->{$k} || 0) for $start_index .. $i;
         }
       }
 
@@ -171,7 +178,9 @@ class Geo::Weather::NBM {
       $col->{'precip_types'} = precip_types($col->{'PRA'}, $col->{'PRZ'}, $col->{'PPL'}, $col->{'PSN'});
       $col->{'SKY_cld'}      = sky_cover_to_abbr($col->{'SKY'} / 100);
       $col->{'WDR_abbr'}     = wind_direction_abbr($col->{WDR} * 10);
-      $col->{'prob_ifr'}     = ($col->{IFV} > $col->{IFC}) ? $col->{IFV} : $col->{IFC};
+      if (defined $col->{IFV} and defined $col->{IFC}) {
+        $col->{'prob_ifr'}     = ($col->{IFV} > $col->{IFC}) ? $col->{IFV} : $col->{IFC};
+      }
 
       # Calculate flight conditions
       my $fr = 'VFR';
