@@ -11,7 +11,7 @@ class Geo::Weather::NBM {
   field $data = {};
 
   ADJUST {
-    die 'Station is not valid' unless length $station == 4 and $station =~ m/^\w\w\w\w$/;
+    die 'Station is not valid?' unless length $station <= 6 and $station =~ m/^\w{2,6}$/;
     $station = uc $station;
   }
 
