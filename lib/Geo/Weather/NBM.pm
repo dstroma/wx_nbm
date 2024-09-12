@@ -3,7 +3,7 @@ use experimental 'class';
 
 class Geo::Weather::NBM {
   use builtin ':5.40';
-  use constant DEBUG => 1;
+  use Carp qw(croak);
 
   field $text :param :reader;
   field $station :param :reader;
@@ -29,7 +29,7 @@ class Geo::Weather::NBM {
 
     my @lines = split /\n/, $text;
     shift @lines while (!length $lines[0] or $lines[0] !~ m/$station/);
-    die "Could not find report for $station in text" unless @lines;
+    croak "Could not find report for $station in text" unless @lines;
 
     parse_head(\@lines, $data);
     parse_body(\@lines, $data);
@@ -42,10 +42,10 @@ class Geo::Weather::NBM {
   sub parse_head ($lines, $data) {
     # Parse main header
     my $header = $lines->[0];
-    my ($sta, $label, $month, $day, $year, $hour, $minute) = $header =~ m#(\w\w\w\w)\s+(NBM V4.2 NBS GUIDANCE)\s+(\d{1,2})/(\d{1,2})/(\d\d\d\d)\s+(\d\d)(\d\d) UTC#;
+    my ($sta, $label, $month, $day, $year, $hour, $minute) = $header =~ m#(\w\w\w\w)\s+(NBM.+NBS GUIDANCE)\s+(\d{1,2})/(\d{1,2})/(\d\d\d\d)\s+(\d\d)(\d\d) UTC#;
 
     unless ($sta and $label and $month and $day and $year) {
-      die "Invalid header:\n\t[$header]\n";
+      croak "Cannot parse NBS forecast: invalid header:\n\t[$header]\n";
     }
 
     $data->{station}       = $sta;
@@ -57,69 +57,31 @@ class Geo::Weather::NBM {
     return;
   }
 
-  my %months = (
-    JAN => 1, FEB => 2, MAR => 3, APR => 4, MAY => 5, JUN => 6,
-    JUL => 7, AUG => 8, SEP => 9, OCT => 10, NOV => 11, DEC => 12
-  );
   sub parse_days ($lines, $data) {
-    # Extract a list of dates separated by a /
-    # e.g. '/AUG 30 /SEPT 1 /SEPT2'
-    #my @dates = ();
-    #for my $line (@$lines) {
-    #  next unless $line =~ m`^\sDT`;
-    #  my ($dt, @tmp_dates) = split m`/`, $line;
-    #  foreach my $tmp_date (@tmp_dates) {
-    #    my ($month, $day) = split m`\s+`, $tmp_date;
-    #    $month = substr($month, 0, 3);
-    #    die 'Could not identify month' unless $months{$month};
-    #    push @dates, [$months{$month}, $day];
-    #  }
-    #  last;
-    #}
-
     # Add UTC_mon and UTC_day and hour_span to each column value
     # This is more difficult than it should be due to the odd formatting
-    {
-      my $h;
-      my $d;
-      my $m;
-      my $columns = $data->{'columns'};
-      my $gen_dt  = $data->{'generated_at'}->inflate;
-      foreach my $i (0 .. $#$columns) {
-        my $col = $columns->[$i];
+    my $columns = $data->{'columns'};
+    my $gen_dt  = $data->{'generated_at'}->inflate;
 
-        # Get the date
-        my $for_dt = $gen_dt->clone->add(hours => $col->{FHR});
+    foreach my $i (0 .. $#$columns) {
+      my $col = $columns->[$i];
 
-        # If the column UTC hour is less than the previous, it's a new day
-        #if (!defined $h or !defined $d or $columns->[$i]{'UTC'} < $h) {
-        #  my $stored_date = shift @dates;
-        #  $columns->[$i]{'UTC_mon'} = $m = $stored_date->[0];
-        #  $columns->[$i]{'UTC_day'} = $d = $stored_date->[1];
-        #} else {
-        #  $columns->[$i]{'UTC_mon'} = $m;
-        #  $columns->[$i]{'UTC_day'} = $d;
-        #}
-        $m = $col->{'UTC_mon'} = $for_dt->strftime('%m');
-        $d = $col->{'UTC_day'} = $for_dt->strftime('%d');
-        $h = $col->{'UTC'};
-        # Save to table for conversion from date to array index
-        $data->{mdh_to_index}{sprintf('%02d-%02dT%02d', $m, $d, $h)} = $i;
-        # Update previous column with its length
-        unless ($i == 0) {
-          my $span_hours = $columns->[$i]{'UTC'} - $columns->[$i-1]{'UTC'};
-          $span_hours += 24 if $span_hours < 0;
-          $columns->[$i - 1]->{'hour_span'} = $span_hours;
-        }
+      # The easiest way to get the date for this column is to use the
+      # forecast cycle date time and add the forecast hour (FHR).
+      my $for_dt = $gen_dt->clone->add(hours => $col->{FHR});
+      my $m = $col->{'UTC_mon'} = $for_dt->strftime('%m');
+      my $d = $col->{'UTC_day'} = $for_dt->strftime('%d');
+      my $h = $col->{'UTC'};
+      $col->{'UTC_dt'} = DateTimeX::Inflatable->deflate($for_dt);
 
-        # Compute date/time of each column
-        my $prev_dt = $i == 0 ? $data->{generated_at} : $columns->[$i - 1]->{UTC_dt};
-        my $new_dt  = $prev_dt->clone;
-        $new_dt->{'hour'}  = $col->{'UTC'};
-        $new_dt->{'day'}   = $col->{'UTC_day'};
-        $new_dt->{'month'} = $col->{'UTC_mon'};
-        $new_dt->{'year'}++ if $col->{'UTC_mon'} < $prev_dt->{'month'};
-        $col->{'UTC_dt'} = $new_dt;
+      # Save to table for conversion from date to array index
+      $data->{mdh_to_index}{sprintf('%02d-%02dT%02d', $m, $d, $h)} = $i;
+
+      # Update previous column with hour length (normally 3 but just in case)
+      unless ($i == 0) {
+        my $span_hours = $columns->[$i]{'UTC'} - $columns->[$i-1]{'UTC'};
+        $span_hours += 24 if $span_hours < 0;
+        $columns->[$i - 1]->{'hour_span'} = $span_hours;
       }
     }
     return;
@@ -249,10 +211,17 @@ class Geo::Weather::NBM {
 } #clsas
 
 package DateTimeX::Inflatable {
-  sub new ($class, %args) { bless \%args, $class;}
-  sub inflate ($self) { DateTime->new(%$self); }
-  sub to ($self, $class) { $class->new(%$self); }
-  sub clone ($self) { return __PACKAGE__->new(%$self); }
+  sub new     ($class, %args) { bless \%args, $class;     }
+  sub clone   ($self)         { __PACKAGE__->new(%$self); }
+  sub to      ($self, $class) { $class->new(%$self);      }
+  sub inflate ($self)         { DateTime->new(%$self);    }
+  sub deflate ($class, $obj)  {
+    my %h;
+    foreach my $field (qw(year month day hour minute second time_zone)) {
+      $h{$field} = $obj->$field;
+    }
+    bless \%h, $class;
+  }
 }
 
 =pod
