@@ -11,7 +11,7 @@ class Geo::Weather::NBM {
   field $data = {};
 
   ADJUST {
-    die 'Station is not valid?' unless length $station <= 6 and $station =~ m/^\w{2,6}$/;
+    die 'Station is not valid' unless length $station <= 6 and $station =~ m/^\w{2,6}$/;
     $station = uc $station;
   }
 
@@ -93,11 +93,9 @@ class Geo::Weather::NBM {
       next unless $line =~ m#^\s\w\w\w\s#;
       my $label = substr($line, 1, 3);
       my $rest  = substr($line, 5);
-      my @cells = ();
       {
         my $i = 0;
         while ($rest and length $rest >= 3) {
-          my $cell_value = substr($rest, 0, 3);
           $rest = substr($rest, 3);
           $columns[$i] //= {};
           $columns[$i]->{$label} = trim($cell_value);
