@@ -7,11 +7,12 @@ class Geo::Weather::NBM {
 
   field $text :param :reader;
   field $station :param :reader;
-  field $is_parsed = false;
+  field $is_parsed = false; # builtin::false
   field $data = {};
 
   ADJUST {
-    die 'Station is not valid' unless length $station <= 6 and $station =~ m/^\w{2,6}$/;
+    croak 'Station is not valid'  unless defined $station and length $station <= 6 and $station =~ m/^\w{2,6}$/;
+    croak 'Forecast text invalid' unless defined $text    and length $text > 100;
     $station = uc $station;
   }
 
@@ -96,6 +97,7 @@ class Geo::Weather::NBM {
       {
         my $i = 0;
         while ($rest and length $rest >= 3) {
+          my $cell_value = substr($rest, 0, 3);
           $rest = substr($rest, 3);
           $columns[$i] //= {};
           $columns[$i]->{$label} = trim($cell_value);
@@ -209,16 +211,17 @@ class Geo::Weather::NBM {
 } #clsas
 
 package DateTimeX::Inflatable {
-  sub new     ($class, %args) { bless \%args, $class;     }
-  sub clone   ($self)         { __PACKAGE__->new(%$self); }
-  sub to      ($self, $class) { $class->new(%$self);      }
-  sub inflate ($self)         { DateTime->new(%$self);    }
+  # Stores data necessary to create a DateTime object as an arrayref
+  sub new     ($class, @args) { bless \@args, $class;     }
+  sub clone   ($self)         { __PACKAGE__->new(@$self); }
+  sub to      ($self, $class) { $class->new(@$self);      }
+  sub inflate ($self)         { DateTime->new(@$self);    }
   sub deflate ($class, $obj)  {
     my %h;
     foreach my $field (qw(year month day hour minute second time_zone)) {
       $h{$field} = $obj->$field;
     }
-    bless \%h, $class;
+    bless [%h], $class;
   }
 }
 
