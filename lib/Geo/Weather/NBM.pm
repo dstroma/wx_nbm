@@ -43,11 +43,11 @@ class Geo::Weather::NBM {
   sub parse_head ($lines, $data) {
     # Parse main header
     my $header = $lines->[0];
-    my ($sta, $label, $month, $day, $year, $hour, $minute) = $header =~ m#(\w\w\w\w)\s+(NBM.+NBS GUIDANCE)\s+(\d{1,2})/(\d{1,2})/(\d\d\d\d)\s+(\d\d)(\d\d) UTC#;
+    my ($sta, $label, $month, $day, $year, $hour, $minute) = $header =~
+      m#(\w\w\w\w)\s+(NBM.+NBS GUIDANCE)\s+(\d{1,2})/(\d{1,2})/(\d\d\d\d)\s+(\d\d)(\d\d) UTC#;
 
-    unless ($sta and $label and $month and $day and $year) {
-      croak "Cannot parse NBS forecast: invalid header:\n\t[$header]\n";
-    }
+    croak "Cannot parse NBS forecast: invalid header:\n\t[$header]\n"
+      unless $sta and $label and $month and $day and $year;
 
     $data->{station}       = $sta;
     $data->{forecast_type} = $label;
