@@ -5,9 +5,11 @@ class Geo::Weather::NBM {
   use builtin ':5.40';
   use Carp qw(croak);
 
-  field $text :param :reader;
+  field $text    :param :reader;
   field $station :param :reader;
-  field $is_parsed = false; # builtin::false
+
+  field $is_parsed      = false;
+  field $is_meta_parsed = false;
   field $data = {};
 
   ADJUST {
@@ -25,14 +27,22 @@ class Geo::Weather::NBM {
     $data;
   }
 
-  method parse () {
+  method meta () {
+    $self->parse(meta_only => true) unless $is_meta_parsed;
+    $data;
+  }
+
+  method parse (%params) {
     die 'Already parsed' if $is_parsed;
 
     my @lines = split /\n/, $text;
     shift @lines while (!length $lines[0] or $lines[0] !~ m/$station/);
     croak "Could not find report for $station in text" unless @lines;
 
-    parse_head(\@lines, $data);
+    parse_head(\@lines, $data) unless $is_meta_parsed;
+    $is_meta_parsed = true;
+    return if $params{meta_only};
+
     parse_body(\@lines, $data);
     parse_days(\@lines, $data);
     massage($data);
@@ -49,11 +59,30 @@ class Geo::Weather::NBM {
     croak "Cannot parse NBS forecast: invalid header:\n\t[$header]\n"
       unless $sta and $label and $month and $day and $year;
 
+    # Get the state, forecast type, and datetime the forecast was generated
     $data->{station}       = $sta;
     $data->{forecast_type} = $label;
     $data->{generated_at}  = DateTimeX::Inflatable->new(
       year => $year, month => $month, day => $day, hour => $hour, minute => $minute, second => 0, time_zone => 'UTC'
     );
+
+    # Using a for loop so we don't copy the array
+    my $gen_dt = $data->{generated_at}->inflate;
+    my ($beg_hrs, $end_hrs);
+    for (my $i = 0; $i <= $#$lines; $i++) {
+      if ($lines->[$i] =~ m/^\s*FHR\s*(\d\d).+(\d\d)\s*$/) {
+        $beg_hrs = $1;
+        $end_hrs = $2;
+        last;
+      }
+    }
+
+    croak 'Problem parsing forecast: cannot determine start and end times'
+      unless defined $beg_hrs and $end_hrs;
+
+    my $begin = DateTimeX::Inflatable->deflate($gen_dt->clone->add(hours => $beg_hrs));
+    my $end   = DateTimeX::Inflatable->deflate($gen_dt->clone->add(hours => $end_hrs));
+    $data->{forecast_period} = { begin => $begin, end => $end };
 
     return;
   }
