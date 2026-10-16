@@ -1,5 +1,6 @@
-use v5.40;
+use v5.44;
 use experimental 'class';
+no warnings 'experimental::signature_named_parameters';
 
 class Geo::Weather::NBM {
   use builtin ':5.40';
@@ -32,7 +33,7 @@ class Geo::Weather::NBM {
     $data;
   }
 
-  method parse (%params) {
+  method parse (:$meta_only = undef) {
     die 'Already parsed' if $is_parsed;
 
     my @lines = split /\n/, $text;
@@ -41,11 +42,11 @@ class Geo::Weather::NBM {
 
     parse_head(\@lines, $data) unless $is_meta_parsed;
     $is_meta_parsed = true;
-    return if $params{meta_only};
+    return if $meta_only;
 
     parse_body(\@lines, $data);
     parse_days(\@lines, $data);
-    massage($data);
+    munge($data);
 
     $is_parsed = true;
   }
@@ -139,7 +140,7 @@ class Geo::Weather::NBM {
     return;
   } #sub
 
-  sub massage ($data) {
+  sub munge ($data) {
     # The preciptation are keyed for the ending hour. Move them to starting hour
     my $columns = $data->{'columns'};
     foreach my $i (0 .. $#$columns) {
@@ -237,7 +238,7 @@ class Geo::Weather::NBM {
     return $word;
   }
 
-} #clsas
+} #class
 
 package DateTimeX::Inflatable {
   # Stores data necessary to create a DateTime object as an arrayref
